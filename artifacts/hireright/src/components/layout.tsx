@@ -1,6 +1,6 @@
 import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Link, useLocation } from "wouter";
-import { LayoutDashboard, Briefcase, Users, FileCheck, BarChart } from "lucide-react";
+import { LayoutDashboard, Briefcase, Users, FileCheck, BarChart, BookOpen } from "lucide-react";
 import { ReactNode } from "react";
 
 export function Layout({ children }: { children: ReactNode }) {
@@ -52,6 +52,14 @@ export function Layout({ children }: { children: ReactNode }) {
                   <Link href="/analytics" data-testid="nav-analytics">
                     <BarChart className="h-4 w-4" />
                     <span>Analytics</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={location === "/help"}>
+                  <Link href="/help" data-testid="nav-help">
+                    <BookOpen className="h-4 w-4" />
+                    <span>Help</span>
                   </Link>
                 </SidebarMenuButton>
               </SidebarMenuItem>
