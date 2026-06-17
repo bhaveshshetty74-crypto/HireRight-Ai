@@ -3,20 +3,28 @@ info:
   # Do not change the title, if the title changes, the import paths will be broken
   title: Api
   version: 0.1.0
-  description: API specification
+  description: HireRight AI - AI-powered recruitment platform
 servers:
   - url: /api
     description: Base API path
 tags:
   - name: health
     description: Health operations
+  - name: roles
+    description: Job role management
+  - name: candidates
+    description: Candidate management
+  - name: screening
+    description: AI-powered candidate screening
+  - name: ai
+    description: AI generation endpoints
+
 paths:
   /healthz:
     get:
       operationId: healthCheck
       tags: [health]
       summary: Health check
-      description: Returns server health status
       responses:
         "200":
           description: Healthy
@@ -24,13 +32,744 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /roles:
+    get:
+      operationId: listRoles
+      tags: [roles]
+      summary: List all roles
+      responses:
+        "200":
+          description: List of roles
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Role"
+    post:
+      operationId: createRole
+      tags: [roles]
+      summary: Create a new role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+
+  /roles/{id}:
+    get:
+      operationId: getRole
+      tags: [roles]
+      summary: Get a role by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateRole
+      tags: [roles]
+      summary: Update a role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RoleUpdate"
+      responses:
+        "200":
+          description: Updated role
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Role"
+    delete:
+      operationId: deleteRole
+      tags: [roles]
+      summary: Delete a role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /roles/{id}/jd:
+    get:
+      operationId: getRoleJd
+      tags: [roles]
+      summary: Get AI-generated job description for a role
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Job description
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDescription"
+        "404":
+          description: Not found
+
+  /candidates:
+    get:
+      operationId: listCandidates
+      tags: [candidates]
+      summary: List all candidates
+      parameters:
+        - name: roleId
+          in: query
+          required: false
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of candidates
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Candidate"
+    post:
+      operationId: createCandidate
+      tags: [candidates]
+      summary: Create a new candidate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateInput"
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+
+  /candidates/{id}:
+    get:
+      operationId: getCandidate
+      tags: [candidates]
+      summary: Get a candidate by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateCandidate
+      tags: [candidates]
+      summary: Update a candidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CandidateUpdate"
+      responses:
+        "200":
+          description: Updated candidate
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Candidate"
+    delete:
+      operationId: deleteCandidate
+      tags: [candidates]
+      summary: Delete a candidate
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /candidates/parse-profile:
+    post:
+      operationId: parseProfile
+      tags: [candidates]
+      summary: Parse pasted profile text into candidate fields using AI
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ParseProfileInput"
+      responses:
+        "200":
+          description: Parsed candidate data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ParsedProfile"
+
+  /screening:
+    get:
+      operationId: listScreenings
+      tags: [screening]
+      summary: List screening results, optionally by roleId
+      parameters:
+        - name: roleId
+          in: query
+          required: false
+          schema:
+            type: ["integer", "null"]
+        - name: candidateId
+          in: query
+          required: false
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: List of screening results
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScreeningResult"
+    post:
+      operationId: createScreening
+      tags: [screening]
+      summary: Run AI screening for a candidate against a role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ScreeningInput"
+      responses:
+        "201":
+          description: Screening result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreeningResult"
+
+  /screening/batch:
+    post:
+      operationId: batchScreen
+      tags: [screening]
+      summary: Screen multiple candidates against a role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchScreenInput"
+      responses:
+        "200":
+          description: All screening results for the role
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ScreeningResult"
+
+  /screening/{id}/shortlist:
+    patch:
+      operationId: toggleShortlist
+      tags: [screening]
+      summary: Toggle shortlist status on a screening result
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Updated screening result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ScreeningResult"
+
+  /ai/interview-questions:
+    post:
+      operationId: generateInterviewQuestions
+      tags: [ai]
+      summary: Generate tailored interview questions for a candidate+role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/InterviewQuestionsInput"
+      responses:
+        "200":
+          description: Interview questions
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InterviewQuestions"
+
+  /ai/email:
+    post:
+      operationId: generateEmail
+      tags: [ai]
+      summary: Generate a recruitment email draft
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailInput"
+      responses:
+        "200":
+          description: Generated email
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmailDraft"
+
+  /ai/generate-jd:
+    post:
+      operationId: generateJd
+      tags: [ai]
+      summary: Generate a job description for a role
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GenerateJdInput"
+      responses:
+        "200":
+          description: Generated job description
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/JobDescription"
+
+  /analytics/summary:
+    get:
+      operationId: getAnalyticsSummary
+      tags: [ai]
+      summary: Get analytics summary across all roles or for a specific role
+      parameters:
+        - name: roleId
+          in: query
+          required: false
+          schema:
+            type: ["integer", "null"]
+      responses:
+        "200":
+          description: Analytics summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AnalyticsSummary"
+
 components:
   schemas:
     HealthStatus:
       type: object
+      required: [status]
       properties:
         status:
           type: string
-      required:
-        - status
 
+    Role:
+      type: object
+      required: [id, title, company, experience, skills, createdAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        company:
+          type: string
+        experience:
+          type: string
+        skills:
+          type: string
+        skillTags:
+          type: ["array", "null"]
+          items:
+            type: string
+        jdSummary:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+
+    RoleInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        company:
+          type: string
+        experience:
+          type: string
+        skills:
+          type: string
+
+    RoleUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+        company:
+          type: string
+        experience:
+          type: string
+        skills:
+          type: string
+        jdSummary:
+          type: string
+        skillTags:
+          type: array
+          items:
+            type: string
+
+    JobDescription:
+      type: object
+      required: [title, summary, responsibilities, requirements, niceToHave, skillTags]
+      properties:
+        title:
+          type: string
+        summary:
+          type: string
+        responsibilities:
+          type: array
+          items:
+            type: string
+        requirements:
+          type: array
+          items:
+            type: string
+        niceToHave:
+          type: array
+          items:
+            type: string
+        skillTags:
+          type: array
+          items:
+            type: string
+
+    Candidate:
+      type: object
+      required: [id, name, title, experience, location, source, resume, stage, createdAt]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        title:
+          type: string
+        experience:
+          type: string
+        location:
+          type: string
+        source:
+          type: string
+        resume:
+          type: string
+        stage:
+          type: string
+        notes:
+          type: ["string", "null"]
+        shortlisted:
+          type: boolean
+        createdAt:
+          type: string
+
+    CandidateInput:
+      type: object
+      required: [name, title, experience, location, source, resume]
+      properties:
+        name:
+          type: string
+        title:
+          type: string
+        experience:
+          type: string
+        location:
+          type: string
+        source:
+          type: string
+        resume:
+          type: string
+        stage:
+          type: string
+        notes:
+          type: string
+
+    CandidateUpdate:
+      type: object
+      properties:
+        name:
+          type: string
+        title:
+          type: string
+        experience:
+          type: string
+        location:
+          type: string
+        source:
+          type: string
+        resume:
+          type: string
+        stage:
+          type: string
+        notes:
+          type: string
+        shortlisted:
+          type: boolean
+
+    ParseProfileInput:
+      type: object
+      required: [text, source]
+      properties:
+        text:
+          type: string
+        source:
+          type: string
+
+    ParsedProfile:
+      type: object
+      required: [name, title, experience, location, resume]
+      properties:
+        name:
+          type: string
+        title:
+          type: string
+        experience:
+          type: string
+        location:
+          type: string
+        resume:
+          type: string
+
+    ScreeningResult:
+      type: object
+      required: [id, candidateId, roleId, score, verdict, strengths, concerns, recommendation, assessmentQuestion, shortlisted, createdAt]
+      properties:
+        id:
+          type: integer
+        candidateId:
+          type: integer
+        roleId:
+          type: integer
+        candidateName:
+          type: ["string", "null"]
+        roleTitle:
+          type: ["string", "null"]
+        score:
+          type: integer
+        verdict:
+          type: string
+        strengths:
+          type: array
+          items:
+            type: string
+        concerns:
+          type: array
+          items:
+            type: string
+        recommendation:
+          type: string
+        assessmentQuestion:
+          type: string
+        shortlisted:
+          type: boolean
+        createdAt:
+          type: string
+
+    ScreeningInput:
+      type: object
+      required: [candidateId, roleId]
+      properties:
+        candidateId:
+          type: integer
+        roleId:
+          type: integer
+
+    BatchScreenInput:
+      type: object
+      required: [roleId, candidateIds]
+      properties:
+        roleId:
+          type: integer
+        candidateIds:
+          type: array
+          items:
+            type: integer
+
+    InterviewQuestionsInput:
+      type: object
+      required: [candidateId, roleId]
+      properties:
+        candidateId:
+          type: integer
+        roleId:
+          type: integer
+
+    InterviewQuestions:
+      type: object
+      required: [technical, behavioral, roleSpecific, redFlags]
+      properties:
+        technical:
+          type: array
+          items:
+            type: string
+        behavioral:
+          type: array
+          items:
+            type: string
+        roleSpecific:
+          type: array
+          items:
+            type: string
+        redFlags:
+          type: array
+          items:
+            type: string
+
+    EmailInput:
+      type: object
+      required: [candidateId, roleId, emailType]
+      properties:
+        candidateId:
+          type: integer
+        roleId:
+          type: integer
+        emailType:
+          type: string
+          enum: [invite, reject, offer, assessment]
+
+    EmailDraft:
+      type: object
+      required: [subject, body]
+      properties:
+        subject:
+          type: string
+        body:
+          type: string
+
+    GenerateJdInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+        company:
+          type: string
+        experience:
+          type: string
+        skills:
+          type: string
+
+    AnalyticsSummary:
+      type: object
+      required: [totalCandidates, totalRoles, totalScreened, totalShortlisted, avgScore, shortlistRate, byVerdict, bySource, byStage]
+      properties:
+        totalCandidates:
+          type: integer
+        totalRoles:
+          type: integer
+        totalScreened:
+          type: integer
+        totalShortlisted:
+          type: integer
+        avgScore:
+          type: integer
+        shortlistRate:
+          type: integer
+        byVerdict:
+          type: array
+          items:
+            $ref: "#/components/schemas/VerdictCount"
+        bySource:
+          type: array
+          items:
+            $ref: "#/components/schemas/SourceCount"
+        byStage:
+          type: array
+          items:
+            $ref: "#/components/schemas/StageCount"
+
+    VerdictCount:
+      type: object
+      required: [label, count]
+      properties:
+        label:
+          type: string
+        count:
+          type: integer
+
+    SourceCount:
+      type: object
+      required: [label, count]
+      properties:
+        label:
+          type: string
+        count:
+          type: integer
+
+    StageCount:
+      type: object
+      required: [label, count]
+      properties:
+        label:
+          type: string
+        count:
+          type: integer
