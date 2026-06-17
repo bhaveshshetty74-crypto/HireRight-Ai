@@ -1,0 +1,868 @@
+import { useState, useRef } from "react";
+import * as XLSX from "xlsx";
+
+// ─── Constants ────────────────────────────────────────────────────────────────
+const PIPELINE_STAGES = ["Applied", "Screened", "Interview", "Offer", "Hired", "Rejected"];
+const SOURCE_COLORS = { LinkedIn: "#0a66c2", Naukri: "#e05c1a", Indeed: "#2164f3", "PDF Upload": "#7c5cbf", "CSV Import": "#00c896", Other: "#888" };
+const scoreColor = s => s >= 80 ? "#00c896" : s >= 60 ? "#4f8ef7" : s >= 40 ? "#f5a623" : "#e05c5c";
+const verdictColor = v => ({ "Strong Fit": "#00c896", "Good Fit": "#4f8ef7", "Possible Fit": "#f5a623", "Not a Fit": "#e05c5c" }[v] || "#888");
+
+const SAMPLE_ROLES = [
+  { id: "r1", title: "Senior React Developer", company: "TechCorp India", experience: "4-6 years", skills: "React, TypeScript, Node.js, AWS, GraphQL" },
+  { id: "r2", title: "Product Manager", company: "FinTech Startup", experience: "3-5 years", skills: "Product strategy, Agile, SQL, stakeholder management" },
+  { id: "r3", title: "DevOps Engineer", company: "CloudBase Ltd", experience: "3-5 years", skills: "Kubernetes, Docker, CI/CD, AWS, Terraform" },
+];
+
+const SAMPLE_CANDIDATES = [
+  { id: "c1", name: "Priya Sharma", title: "Senior React Developer", experience: "5 years", location: "Bangalore", source: "LinkedIn", resume: "5 years React, Node.js, AWS. Led team of 4. Built e-commerce platform for 2M users. B.Tech VIT. Expert in TypeScript, GraphQL, Docker, CI/CD.", stage: "Applied", notes: "" },
+  { id: "c2", name: "Divya Nair", title: "React Architect", experience: "6 years", location: "Chennai", source: "PDF Upload", resume: "6 years React. Architected micro-frontend systems at fintech startup. Mentored 6 devs. Published npm packages. IIT Madras. React, Next.js, TypeScript, GraphQL.", stage: "Applied", notes: "" },
+  { id: "c3", name: "Arjun Mehta", title: "Full Stack Developer", experience: "3 years", location: "Mumbai", source: "Naukri", resume: "3 years React and Django. 2 funded startups. Built analytics dashboards. Mumbai University. React, Django, PostgreSQL, Redis.", stage: "Applied", notes: "" },
+  { id: "c4", name: "Karan Patel", title: "Software Engineer", experience: "2 years", location: "Pune", source: "Indeed", resume: "2 years Java backend. Some React exposure. Transitioning to frontend. B.Tech Pune University. Java, Spring, React basics, MySQL.", stage: "Applied", notes: "" },
+  { id: "c5", name: "Meera Iyer", title: "Frontend Developer", experience: "4 years", location: "Hyderabad", source: "Naukri", resume: "4 years frontend. Improved load time by 60%. Infosys + healthtech startup. M.Tech BITS Pilani. React, Redux, Jest, Cypress, Tailwind.", stage: "Applied", notes: "" },
+  { id: "c6", name: "Rahul Verma", title: "Senior Frontend Engineer", experience: "7 years", location: "Delhi", source: "LinkedIn", resume: "7 years frontend at Flipkart, Zomato, OYO. Leads checkout team. React, performance optimisation, A/B testing. IIT Delhi.", stage: "Applied", notes: "" },
+  { id: "c7", name: "Anjali Desai", title: "React Native Developer", experience: "3 years", location: "Ahmedabad", source: "LinkedIn", resume: "3 years React and React Native. Apps with 500k+ downloads. React, React Native, Redux, Firebase, GraphQL. B.Tech DAIICT.", stage: "Applied", notes: "" },
+];
+
+// ─── Claude API helpers ───────────────────────────────────────────────────────
+async function callClaude(prompt, maxTokens = 1000) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: maxTokens, messages: [{ role: "user", content: prompt }] })
+  });
+  const data = await res.json();
+  return data.content.map(i => i.text || "").join("");
+}
+async function callClaudeJSON(prompt, maxTokens = 1000) {
+  const text = await callClaude(prompt, maxTokens);
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+async function screenCandidate(candidate, role) {
+  return callClaudeJSON(`You are an expert recruiter. Evaluate strictly.
+ROLE: ${role.title} | EXP: ${role.experience} | SKILLS: ${role.skills || role.skillTags?.join(", ")}
+CANDIDATE: ${candidate.name}, ${candidate.title}, ${candidate.experience}, ${candidate.location}
+PROFILE: ${candidate.resume}
+Return ONLY valid JSON:
+{"score":<0-100>,"verdict":"Strong Fit"|"Good Fit"|"Possible Fit"|"Not a Fit","strengths":["s1","s2"],"concerns":["c1"] or [],"recommendation":"one sentence","assessmentQuestion":"one technical question"}`);
+}
+
+async function generateInterviewQuestions(candidate, role) {
+  return callClaudeJSON(`Generate tailored interview questions for this candidate.
+ROLE: ${role.title} | SKILLS: ${role.skills || role.skillTags?.join(", ")}
+CANDIDATE: ${candidate.name}, ${candidate.title}, ${candidate.experience}
+PROFILE: ${candidate.resume}
+Return ONLY valid JSON:
+{"technical":["q1","q2","q3","q4"],"behavioral":["q1","q2","q3"],"roleSpecific":["q1","q2","q3"],"redFlags":["thing to probe 1","thing to probe 2"]}`, 1000);
+}
+
+async function generateEmail(candidate, role, emailType) {
+  const prompts = {
+    invite: `Write a professional interview invite email for ${candidate.name} (${candidate.title}) for the ${role.title} role at ${role.company || "our company"}. Warm, concise, professional.`,
+    reject: `Write a respectful rejection email for ${candidate.name} who applied for ${role.title} at ${role.company || "our company"}. Kind, brief, leaves door open.`,
+    offer: `Write an exciting job offer email for ${candidate.name} for the ${role.title} role at ${role.company || "our company"}. Enthusiastic and professional.`,
+    assessment: `Write an email to ${candidate.name} asking them to complete a technical assessment for ${role.title} at ${role.company || "our company"}. Friendly and clear.`,
+  };
+  const text = await callClaude(`${prompts[emailType]}\nReturn ONLY valid JSON: {"subject":"email subject","body":"full email body"}`, 800);
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
+}
+
+async function generateJD(role) {
+  return callClaudeJSON(`Generate a job description for: Role: ${role.title}, Company: ${role.company || "a tech company"}, Experience: ${role.experience}, Skills: ${role.skills}
+Return ONLY valid JSON: {"title":"title","summary":"2 sentences","responsibilities":["r1","r2","r3","r4"],"requirements":["req1","req2","req3","req4"],"niceToHave":["n1","n2"],"skillTags":["t1","t2","t3","t4","t5"]}`);
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+function readFileAsText(file) { return new Promise(r => { const fr = new FileReader(); fr.onload = e => r(e.target.result); fr.readAsText(file); }); }
+function readFileAsDataURL(file) { return new Promise(r => { const fr = new FileReader(); fr.onload = e => r(e.target.result); fr.readAsDataURL(file); }); }
+
+// ─── Main App ─────────────────────────────────────────────────────────────────
+export default function HireRightAI() {
+  // Core state
+  const [view, setView] = useState("dashboard"); // dashboard | pipeline | compare | analytics
+  const [roles, setRoles] = useState(SAMPLE_ROLES);
+  const [activeRoleId, setActiveRoleId] = useState("r1");
+  const [jds, setJds] = useState({});
+  const [candidates, setCandidates] = useState(SAMPLE_CANDIDATES);
+  const [screenResults, setScreenResults] = useState({});
+  const [shortlisted, setShortlisted] = useState([]);
+  const [toast, setToast] = useState(null);
+  const [loadingStates, setLoadingStates] = useState({});
+
+  // Modals
+  const [modal, setModal] = useState(null); // { type, data }
+
+  // Import
+  const [importTab, setImportTab] = useState("paste");
+  const [pasteText, setPasteText] = useState("");
+  const [pasteSource, setPasteSource] = useState("LinkedIn");
+  const fileInputRef = useRef();
+  const csvInputRef = useRef();
+
+  // Role form
+  const [showRoleForm, setShowRoleForm] = useState(false);
+  const [newRole, setNewRole] = useState({ title: "", company: "", experience: "", skills: "" });
+
+  const activeRole = roles.find(r => r.id === activeRoleId) || roles[0];
+  const roleCandidates = candidates; // In real app, filter by roleId
+  const roleResults = screenResults[activeRoleId] || [];
+
+  function setLoading(key, val) { setLoadingStates(p => ({ ...p, [key]: val })); }
+  function showToast(msg, type = "success") { setToast({ msg, type }); setTimeout(() => setToast(null), 3500); }
+
+  // ── Screening ──
+  async function screenAll() {
+    setLoading("screen", true);
+    setScreenResults(p => ({ ...p, [activeRoleId]: [] }));
+    const results = [];
+    for (const c of roleCandidates) {
+      try {
+        const r = await screenCandidate(c, activeRole);
+        results.push({ ...c, ...r, roleId: activeRoleId });
+      } catch { results.push({ ...c, score: 0, verdict: "Error", strengths: [], concerns: ["Failed"], recommendation: "Manual review", assessmentQuestion: "", roleId: activeRoleId }); }
+      setScreenResults(p => ({ ...p, [activeRoleId]: [...results] }));
+    }
+    setShortlisted(p => [...new Set([...p, ...results.filter(r => r.score >= 70).map(r => r.id)])]);
+    setLoading("screen", false);
+    showToast(`${results.length} candidates screened!`);
+  }
+
+  // ── Stage update ──
+  function updateStage(candidateId, stage) {
+    setCandidates(p => p.map(c => c.id === candidateId ? { ...c, stage } : c));
+    setScreenResults(p => {
+      const updated = { ...p };
+      Object.keys(updated).forEach(rid => { updated[rid] = updated[rid].map(c => c.id === candidateId ? { ...c, stage } : c); });
+      return updated;
+    });
+  }
+
+  // ── Notes ──
+  function updateNote(candidateId, note) {
+    setCandidates(p => p.map(c => c.id === candidateId ? { ...c, notes: note } : c));
+  }
+
+  // ── Add role ──
+  async function addRole() {
+    if (!newRole.title) return;
+    setLoading("addRole", true);
+    const id = "r" + Date.now();
+    const jd = await generateJD(newRole).catch(() => null);
+    setRoles(p => [...p, { ...newRole, id }]);
+    if (jd) setJds(p => ({ ...p, [id]: jd }));
+    setActiveRoleId(id);
+    setNewRole({ title: "", company: "", experience: "", skills: "" });
+    setShowRoleForm(false);
+    setLoading("addRole", false);
+    showToast(`Role "${newRole.title}" added!`);
+  }
+
+  // ── PDF import ──
+  async function handlePDFUpload(e) {
+    const files = Array.from(e.target.files); if (!files.length) return;
+    setLoading("pdf", true);
+    for (const file of files) {
+      try {
+        const dataUrl = await readFileAsDataURL(file);
+        const base64 = dataUrl.split(",")[1];
+        const res = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 600, messages: [{ role: "user", content: [{ type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } }, { type: "text", text: 'Extract resume info. Return ONLY valid JSON: {"name":"","title":"","experience":"","location":"","resume":"2-3 sentence summary"}' }] }] })
+        });
+        const data = await res.json();
+        const parsed = JSON.parse(data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim());
+        setCandidates(p => [...p, { id: "c" + Date.now() + Math.random(), source: "PDF Upload", stage: "Applied", notes: "", ...parsed }]);
+        showToast(`${parsed.name} added from PDF`);
+      } catch { showToast(`Failed: ${file.name}`, "error"); }
+    }
+    setLoading("pdf", false); e.target.value = "";
+  }
+
+  // ── CSV import ──
+  async function handleCSVUpload(e) {
+    const file = e.target.files[0]; if (!file) return;
+    setLoading("csv", true);
+    try {
+      let rows;
+      if (file.name.endsWith(".xlsx") || file.name.endsWith(".xls")) {
+        const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+        rows = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]]);
+      } else {
+        const text = await readFileAsText(file);
+        const lines = text.trim().split("\n");
+        const headers = lines[0].split(",").map(h => h.trim().replace(/"/g, ""));
+        rows = lines.slice(1).map(line => { const vals = line.match(/(".*?"|[^,]+)/g) || []; return Object.fromEntries(headers.map((h, i) => [h, (vals[i] || "").replace(/"/g, "").trim()])); });
+      }
+      const newC = rows.filter(r => r.name).map(r => ({ id: "c" + Date.now() + Math.random(), name: r.name, title: r.title || "Unknown", experience: r.experience || "Unknown", location: r.location || "Unknown", source: r.source || "CSV Import", resume: r.resume || r.skills || "", stage: "Applied", notes: "" }));
+      setCandidates(p => [...p, ...newC]);
+      showToast(`${newC.length} candidates imported`);
+    } catch { showToast("CSV failed", "error"); }
+    setLoading("csv", false); e.target.value = "";
+  }
+
+  // ── Paste import ──
+  async function handlePaste() {
+    if (!pasteText.trim()) return;
+    setLoading("paste", true);
+    try {
+      const parsed = await callClaudeJSON(`Parse this ${pasteSource} profile. Return ONLY valid JSON: {"name":"","title":"","experience":"","location":"","resume":"2-3 sentence summary"}\n\nPROFILE:\n${pasteText}`);
+      setCandidates(p => [...p, { id: "c" + Date.now(), source: pasteSource, stage: "Applied", notes: "", ...parsed }]);
+      setPasteText(""); showToast(`${parsed.name} added from ${pasteSource}`);
+    } catch { showToast("Parse failed", "error"); }
+    setLoading("paste", false);
+  }
+
+  // ── Export ──
+  function exportShortlist() {
+    const data = roleResults.filter(r => shortlisted.includes(r.id)).sort((a, b) => b.score - a.score)
+      .map(c => ({ Name: c.name, Title: c.title, Experience: c.experience, Location: c.location, Source: c.source, Score: c.score, Verdict: c.verdict, Stage: c.stage || "Applied", Recommendation: c.recommendation }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(data), "Shortlist");
+    XLSX.writeFile(wb, `${activeRole.title}_shortlist.xlsx`);
+    showToast("Exported to Excel!");
+  }
+
+  // ── Analytics data ──
+  const analytics = {
+    total: roleCandidates.length,
+    screened: roleResults.length,
+    shortlisted: shortlisted.length,
+    avgScore: roleResults.length ? Math.round(roleResults.reduce((a, b) => a + (b.score || 0), 0) / roleResults.length) : 0,
+    byVerdict: ["Strong Fit", "Good Fit", "Possible Fit", "Not a Fit"].map(v => ({ label: v, count: roleResults.filter(r => r.verdict === v).length, color: verdictColor(v) })),
+    bySource: Object.keys(SOURCE_COLORS).map(s => ({ label: s, count: roleCandidates.filter(c => c.source === s).length, color: SOURCE_COLORS[s] })).filter(s => s.count > 0),
+    byStage: PIPELINE_STAGES.map(s => ({ label: s, count: roleCandidates.filter(c => c.stage === s).length })),
+  };
+
+  const compareList = roleResults.filter(r => shortlisted.includes(r.id)).sort((a, b) => b.score - a.score).slice(0, 4);
+
+  // ─── Render ───────────────────────────────────────────────────────────────
+  return (
+    <div style={{ fontFamily: "'Inter',system-ui,sans-serif", background: "#0b0d14", minHeight: "100vh", color: "#e8eaf0", display: "flex" }}>
+
+      {/* Toast */}
+      {toast && <div style={{ position: "fixed", top: 16, right: 16, zIndex: 9999, background: toast.type === "error" ? "#e05c5c" : "#00c896", color: "#fff", borderRadius: 10, padding: "11px 18px", fontSize: 13, fontWeight: 600, boxShadow: "0 4px 24px #0009", maxWidth: 280 }}>{toast.type === "error" ? "⚠ " : "✓ "}{toast.msg}</div>}
+
+      {/* ── Sidebar ── */}
+      <div style={{ width: 220, background: "#13151f", borderRight: "1px solid #1e2235", display: "flex", flexDirection: "column", minHeight: "100vh", flexShrink: 0 }}>
+        <div style={{ padding: "18px 16px 14px", borderBottom: "1px solid #1e2235" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚡</div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>HireRight AI</div>
+              <div style={{ fontSize: 9, color: "#3d4460" }}>Hiring Platform</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Nav */}
+        <div style={{ padding: "10px 8px" }}>
+          {[
+            { id: "dashboard", icon: "🏠", label: "Dashboard" },
+            { id: "pipeline", icon: "📋", label: "Pipeline" },
+            { id: "compare", icon: "⚖️", label: "Compare" },
+            { id: "analytics", icon: "📊", label: "Analytics" },
+          ].map(n => (
+            <button key={n.id} onClick={() => setView(n.id)}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 9, padding: "9px 10px", borderRadius: 8, border: "none", cursor: "pointer", marginBottom: 2, textAlign: "left", background: view === n.id ? "#1e2235" : "transparent", color: view === n.id ? "#e8eaf0" : "#6b7280", fontSize: 13, fontWeight: view === n.id ? 600 : 400 }}>
+              <span>{n.icon}</span>{n.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Roles */}
+        <div style={{ padding: "8px 8px 0", borderTop: "1px solid #1e2235", marginTop: 4 }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: "#3d4460", textTransform: "uppercase", letterSpacing: "0.6px", padding: "6px 10px 4px" }}>Active Roles</div>
+          {roles.map(r => (
+            <button key={r.id} onClick={() => setActiveRoleId(r.id)}
+              style={{ width: "100%", display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer", marginBottom: 2, textAlign: "left", background: activeRoleId === r.id ? "#4f8ef722" : "transparent" }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: activeRoleId === r.id ? "#4f8ef7" : "#1e2235", flexShrink: 0 }} />
+              <div>
+                <div style={{ fontSize: 12, fontWeight: activeRoleId === r.id ? 600 : 400, color: activeRoleId === r.id ? "#4f8ef7" : "#6b7280", lineHeight: 1.2 }}>{r.title}</div>
+                <div style={{ fontSize: 10, color: "#3d4460" }}>{r.company}</div>
+              </div>
+            </button>
+          ))}
+          <button onClick={() => setShowRoleForm(!showRoleForm)}
+            style={{ width: "100%", padding: "7px 10px", borderRadius: 8, border: "1px dashed #1e2235", cursor: "pointer", background: "transparent", color: "#3d4460", fontSize: 11, marginTop: 4 }}>
+            + Add Role
+          </button>
+        </div>
+
+        {/* Bottom stats */}
+        <div style={{ marginTop: "auto", padding: "12px 14px", borderTop: "1px solid #1e2235" }}>
+          <div style={{ fontSize: 10, color: "#3d4460", marginBottom: 6 }}>CURRENT ROLE</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#9ca3af", marginBottom: 8 }}>{activeRole?.title}</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            {[{ v: roleCandidates.length, l: "Total" }, { v: roleResults.length, l: "Screened" }, { v: shortlisted.length, l: "Shortlist" }, { v: analytics.avgScore || "—", l: "Avg Score" }].map(s => (
+              <div key={s.l} style={{ background: "#0b0d14", borderRadius: 7, padding: "7px 8px", textAlign: "center" }}>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#4f8ef7" }}>{s.v}</div>
+                <div style={{ fontSize: 9, color: "#3d4460" }}>{s.l}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Main Content ── */}
+      <div style={{ flex: 1, overflow: "auto" }}>
+
+        {/* Top bar */}
+        <div style={{ background: "#13151f", borderBottom: "1px solid #1e2235", padding: "13px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 100 }}>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700 }}>{activeRole?.title}</div>
+            <div style={{ fontSize: 11, color: "#6b7280" }}>{activeRole?.company} · {activeRole?.experience}</div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {roleResults.length > 0 && (
+              <button onClick={exportShortlist} style={{ background: "#1e2235", border: "1px solid #1e2235", borderRadius: 8, padding: "7px 14px", color: "#9ca3af", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>⬇ Export</button>
+            )}
+            <button onClick={screenAll} disabled={loadingStates.screen}
+              style={{ background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 8, padding: "8px 16px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: loadingStates.screen ? 0.7 : 1 }}>
+              {loadingStates.screen ? "⏳ Screening..." : `⚡ Screen All (${roleCandidates.length})`}
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: "22px 24px" }}>
+
+          {/* ── Add Role Form ── */}
+          {showRoleForm && (
+            <div style={{ background: "#13151f", border: "1px solid #4f8ef744", borderRadius: 12, padding: 18, marginBottom: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 14 }}>Add New Role</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 11, marginBottom: 12 }}>
+                {[{ k: "title", l: "Job Title *", ph: "e.g. Product Manager" }, { k: "company", l: "Company", ph: "e.g. Startup Ltd" }, { k: "experience", l: "Experience", ph: "e.g. 3-5 years" }, { k: "skills", l: "Key Skills", ph: "e.g. SQL, Agile, Figma" }].map(f => (
+                  <div key={f.k}>
+                    <label style={{ fontSize: 10, fontWeight: 600, color: "#6b7280", display: "block", marginBottom: 4, textTransform: "uppercase" }}>{f.l}</label>
+                    <input value={newRole[f.k]} onChange={e => setNewRole(p => ({ ...p, [f.k]: e.target.value }))} placeholder={f.ph}
+                      style={{ width: "100%", background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 7, padding: "8px 11px", color: "#e8eaf0", fontSize: 12, outline: "none", boxSizing: "border-box" }} />
+                  </div>
+                ))}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={addRole} disabled={!newRole.title || loadingStates.addRole}
+                  style={{ background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 8, padding: "9px 18px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                  {loadingStates.addRole ? "⏳ Creating..." : "✨ Create Role + Generate JD"}
+                </button>
+                <button onClick={() => setShowRoleForm(false)} style={{ background: "transparent", border: "1px solid #1e2235", borderRadius: 8, padding: "9px 14px", color: "#6b7280", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {/* ── DASHBOARD VIEW ── */}
+          {view === "dashboard" && (
+            <div>
+              {/* Import tabs */}
+              <div style={{ background: "#13151f", borderRadius: 12, padding: 18, marginBottom: 20, border: "1px solid #1e2235" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 14 }}>Import Candidates</div>
+                <div style={{ display: "flex", gap: 3, marginBottom: 16, background: "#0b0d14", borderRadius: 9, padding: 3 }}>
+                  {[{ id: "paste", l: "📋 Paste Profile" }, { id: "pdf", l: "📄 PDF Upload" }, { id: "csv", l: "📊 CSV/Excel" }].map(t => (
+                    <button key={t.id} onClick={() => setImportTab(t.id)}
+                      style={{ flex: 1, background: importTab === t.id ? "#13151f" : "transparent", border: importTab === t.id ? "1px solid #1e2235" : "1px solid transparent", borderRadius: 7, padding: "8px 0", cursor: "pointer", fontSize: 12, fontWeight: importTab === t.id ? 700 : 400, color: importTab === t.id ? "#e8eaf0" : "#6b7280" }}>
+                      {t.l}
+                    </button>
+                  ))}
+                </div>
+
+                {importTab === "paste" && (
+                  <div>
+                    <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+                      {["LinkedIn", "Naukri", "Indeed", "Other"].map(s => (
+                        <button key={s} onClick={() => setPasteSource(s)}
+                          style={{ padding: "4px 11px", borderRadius: 20, fontSize: 11, fontWeight: 600, border: "1px solid", cursor: "pointer", background: pasteSource === s ? "#4f8ef722" : "transparent", borderColor: pasteSource === s ? "#4f8ef7" : "#1e2235", color: pasteSource === s ? "#4f8ef7" : "#6b7280" }}>{s}</button>
+                      ))}
+                    </div>
+                    <textarea value={pasteText} onChange={e => setPasteText(e.target.value)} placeholder={`Paste ${pasteSource} profile text here...`} rows={4}
+                      style={{ width: "100%", background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 8, padding: "10px 12px", color: "#e8eaf0", fontSize: 12, outline: "none", resize: "none", boxSizing: "border-box" }} />
+                    <button onClick={handlePaste} disabled={!pasteText.trim() || loadingStates.paste}
+                      style={{ marginTop: 8, background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 8, padding: "9px 18px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer", opacity: pasteText.trim() ? 1 : 0.5 }}>
+                      {loadingStates.paste ? "⏳ Parsing..." : "✨ Add Candidate"}
+                    </button>
+                  </div>
+                )}
+                {importTab === "pdf" && (
+                  <div>
+                    <input type="file" accept=".pdf" multiple ref={fileInputRef} style={{ display: "none" }} onChange={handlePDFUpload} />
+                    <div onClick={() => !loadingStates.pdf && fileInputRef.current.click()}
+                      style={{ border: "2px dashed #1e2235", borderRadius: 10, padding: "24px", textAlign: "center", cursor: "pointer", background: "#0b0d14" }}
+                      onMouseEnter={e => e.currentTarget.style.borderColor = "#4f8ef7"} onMouseLeave={e => e.currentTarget.style.borderColor = "#1e2235"}>
+                      <div style={{ fontSize: 24, marginBottom: 6 }}>📄</div>
+                      <div style={{ fontSize: 13, fontWeight: 600 }}>{loadingStates.pdf ? "⏳ Reading PDFs..." : "Click to upload PDF resumes"}</div>
+                      <div style={{ fontSize: 11, color: "#6b7280", marginTop: 3 }}>AI extracts all details automatically</div>
+                    </div>
+                  </div>
+                )}
+                {importTab === "csv" && (
+                  <div>
+                    <input type="file" accept=".csv,.xlsx,.xls" ref={csvInputRef} style={{ display: "none" }} onChange={handleCSVUpload} />
+                    <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 10 }}>Columns: <code style={{ color: "#4f8ef7" }}>name, title, experience, location, source, resume</code></div>
+                    <button onClick={() => csvInputRef.current.click()} disabled={loadingStates.csv}
+                      style={{ background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 8, padding: "10px 20px", color: "#fff", fontSize: 12, fontWeight: 700, cursor: "pointer" }}>
+                      {loadingStates.csv ? "⏳ Importing..." : "📊 Upload CSV / Excel"}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Candidate cards */}
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>All Candidates ({roleCandidates.length})</span>
+                {loadingStates.screen && <span style={{ fontSize: 11, color: "#4f8ef7" }}>⏳ Screening {roleResults.length}/{roleCandidates.length}...</span>}
+              </div>
+
+              {roleCandidates.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "40px", color: "#3d4460", background: "#13151f", borderRadius: 12, border: "1px solid #1e2235" }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>👥</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>No candidates yet — import above</div>
+                </div>
+              ) : (
+                <div style={{ display: "grid", gap: 10 }}>
+                  {roleCandidates.map(c => {
+                    const result = roleResults.find(r => r.id === c.id);
+                    return (
+                      <div key={c.id} style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: "14px 16px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+                            <div style={{ width: 38, height: 38, borderRadius: "50%", background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 15, flexShrink: 0 }}>{c.name?.charAt(0)}</div>
+                            <div>
+                              <div style={{ fontWeight: 600, fontSize: 14 }}>{c.name}</div>
+                              <div style={{ color: "#9ca3af", fontSize: 11 }}>{c.title} · {c.experience} · {c.location}</div>
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 7, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            {result && <span style={{ fontSize: 18, fontWeight: 800, color: scoreColor(result.score) }}>{result.score}</span>}
+                            {result && <span style={{ background: verdictColor(result.verdict) + "22", border: `1px solid ${verdictColor(result.verdict)}`, color: verdictColor(result.verdict), borderRadius: 20, padding: "2px 8px", fontSize: 10, fontWeight: 700 }}>{result.verdict}</span>}
+                            <span style={{ background: (SOURCE_COLORS[c.source] || "#888") + "22", color: SOURCE_COLORS[c.source] || "#888", borderRadius: 6, padding: "2px 7px", fontSize: 10, fontWeight: 600 }}>{c.source}</span>
+                          </div>
+                        </div>
+
+                        {/* Stage selector */}
+                        <div style={{ marginTop: 11, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                          {PIPELINE_STAGES.map(s => (
+                            <button key={s} onClick={() => updateStage(c.id, s)}
+                              style={{ padding: "3px 9px", borderRadius: 20, fontSize: 10, fontWeight: 600, border: "1px solid", cursor: "pointer", background: c.stage === s ? "#4f8ef722" : "transparent", borderColor: c.stage === s ? "#4f8ef7" : "#1e2235", color: c.stage === s ? "#4f8ef7" : "#3d4460" }}>
+                              {s}
+                            </button>
+                          ))}
+                        </div>
+
+                        {/* Action buttons */}
+                        {result && (
+                          <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                            <button onClick={() => setModal({ type: "interview", data: { candidate: c, role: activeRole } })}
+                              style={{ background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 7, padding: "5px 11px", color: "#9ca3af", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>🎯 Interview Qs</button>
+                            <button onClick={() => setModal({ type: "email", data: { candidate: c, role: activeRole } })}
+                              style={{ background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 7, padding: "5px 11px", color: "#9ca3af", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>📧 Draft Email</button>
+                            <button onClick={() => { const n = prompt(`Notes for ${c.name}:`, c.notes); if (n !== null) updateNote(c.id, n); }}
+                              style={{ background: c.notes ? "#f5a62322" : "#0b0d14", border: `1px solid ${c.notes ? "#f5a62344" : "#1e2235"}`, borderRadius: 7, padding: "5px 11px", color: c.notes ? "#f5a623" : "#9ca3af", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+                              📝 {c.notes ? "Notes ✓" : "Add Note"}
+                            </button>
+                            <button onClick={() => { shortlisted.includes(c.id) ? setShortlisted(p => p.filter(x => x !== c.id)) : setShortlisted(p => [...p, c.id]); }}
+                              style={{ background: shortlisted.includes(c.id) ? "#00c89622" : "#0b0d14", border: `1px solid ${shortlisted.includes(c.id) ? "#00c896" : "#1e2235"}`, borderRadius: 7, padding: "5px 11px", color: shortlisted.includes(c.id) ? "#00c896" : "#9ca3af", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>
+                              {shortlisted.includes(c.id) ? "✓ Shortlisted" : "+ Shortlist"}
+                            </button>
+                          </div>
+                        )}
+
+                        {/* Notes preview */}
+                        {c.notes && <div style={{ marginTop: 8, background: "#f5a62311", border: "1px solid #f5a62322", borderRadius: 7, padding: "6px 10px", fontSize: 11, color: "#f5a623" }}>📝 {c.notes}</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── PIPELINE VIEW ── */}
+          {view === "pipeline" && (
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Hiring Pipeline — {activeRole?.title}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 10 }}>
+                {PIPELINE_STAGES.map(stage => {
+                  const stageCandidates = roleCandidates.filter(c => c.stage === stage);
+                  return (
+                    <div key={stage} style={{ background: "#13151f", borderRadius: 11, padding: 12, border: "1px solid #1e2235", minHeight: 200 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                        <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.4px" }}>{stage}</div>
+                        <div style={{ background: "#0b0d14", borderRadius: 20, padding: "2px 7px", fontSize: 11, fontWeight: 700, color: "#4f8ef7" }}>{stageCandidates.length}</div>
+                      </div>
+                      {stageCandidates.map(c => {
+                        const result = roleResults.find(r => r.id === c.id);
+                        return (
+                          <div key={c.id} style={{ background: "#0b0d14", borderRadius: 8, padding: "9px 10px", marginBottom: 8, border: "1px solid #1e2235" }}>
+                            <div style={{ fontWeight: 600, fontSize: 12 }}>{c.name}</div>
+                            <div style={{ color: "#6b7280", fontSize: 10, marginTop: 2 }}>{c.title}</div>
+                            {result && <div style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 5 }}>
+                              <div style={{ fontSize: 13, fontWeight: 800, color: scoreColor(result.score) }}>{result.score}</div>
+                              <div style={{ width: 1, height: 12, background: "#1e2235" }} />
+                              <div style={{ fontSize: 9, color: verdictColor(result.verdict), fontWeight: 700 }}>{result.verdict}</div>
+                            </div>}
+                            <div style={{ display: "flex", gap: 3, marginTop: 7, flexWrap: "wrap" }}>
+                              {PIPELINE_STAGES.filter(s => s !== stage).slice(0, 2).map(s => (
+                                <button key={s} onClick={() => updateStage(c.id, s)}
+                                  style={{ background: "#1e2235", border: "none", borderRadius: 4, padding: "2px 6px", color: "#6b7280", fontSize: 9, cursor: "pointer" }}>→ {s}</button>
+                              ))}
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {stageCandidates.length === 0 && <div style={{ fontSize: 11, color: "#3d4460", textAlign: "center", marginTop: 20 }}>Empty</div>}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* ── COMPARE VIEW ── */}
+          {view === "compare" && (
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 6 }}>Side-by-Side Comparison</div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 18 }}>Top {compareList.length} shortlisted candidates ranked by fit score</div>
+              {compareList.length < 2 ? (
+                <div style={{ textAlign: "center", padding: "50px", color: "#3d4460", background: "#13151f", borderRadius: 12, border: "1px solid #1e2235" }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>⚖️</div>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>Screen candidates and shortlist at least 2 to compare</div>
+                </div>
+              ) : (
+                <div>
+                  {/* Score overview */}
+                  <div style={{ display: "grid", gridTemplateColumns: `repeat(${compareList.length},1fr)`, gap: 10, marginBottom: 14 }}>
+                    {compareList.map((c, idx) => (
+                      <div key={c.id} style={{ background: "#13151f", border: `1px solid ${idx === 0 ? "#4f8ef7" : "#1e2235"}`, borderRadius: 11, padding: "16px 14px", textAlign: "center", position: "relative" }}>
+                        {idx === 0 && <div style={{ position: "absolute", top: -10, left: "50%", transform: "translateX(-50%)", background: "#f5a623", borderRadius: 20, padding: "2px 10px", fontSize: 9, fontWeight: 700, color: "#000" }}>🏆 TOP</div>}
+                        <div style={{ width: 44, height: 44, borderRadius: "50%", background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 18, margin: "0 auto 8px" }}>{c.name?.charAt(0)}</div>
+                        <div style={{ fontWeight: 700, fontSize: 13 }}>{c.name}</div>
+                        <div style={{ color: "#6b7280", fontSize: 10, marginTop: 2 }}>{c.title}</div>
+                        <div style={{ fontSize: 30, fontWeight: 800, color: scoreColor(c.score), marginTop: 8 }}>{c.score}</div>
+                        <div style={{ background: verdictColor(c.verdict) + "22", border: `1px solid ${verdictColor(c.verdict)}`, color: verdictColor(c.verdict), borderRadius: 20, padding: "3px 10px", fontSize: 10, fontWeight: 700, display: "inline-block", marginTop: 6 }}>{c.verdict}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Comparison rows */}
+                  {[
+                    { label: "Experience", key: "experience" },
+                    { label: "Location", key: "location" },
+                    { label: "Source", key: "source" },
+                    { label: "Stage", key: "stage" },
+                  ].map(row => (
+                    <div key={row.label} style={{ display: "grid", gridTemplateColumns: `120px repeat(${compareList.length},1fr)`, gap: 10, marginBottom: 8, alignItems: "center" }}>
+                      <div style={{ fontSize: 11, fontWeight: 600, color: "#6b7280", textTransform: "uppercase" }}>{row.label}</div>
+                      {compareList.map(c => (
+                        <div key={c.id} style={{ background: "#13151f", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#e8eaf0", border: "1px solid #1e2235" }}>{c[row.key] || "—"}</div>
+                      ))}
+                    </div>
+                  ))}
+
+                  {/* Strengths */}
+                  <div style={{ display: "grid", gridTemplateColumns: `120px repeat(${compareList.length},1fr)`, gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#00c896", textTransform: "uppercase", paddingTop: 8 }}>Strengths</div>
+                    {compareList.map(c => (
+                      <div key={c.id} style={{ background: "#13151f", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e2235" }}>
+                        {c.strengths?.map((s, i) => <div key={i} style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>✓ {s}</div>)}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Concerns */}
+                  <div style={{ display: "grid", gridTemplateColumns: `120px repeat(${compareList.length},1fr)`, gap: 10, marginBottom: 8 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#e05c5c", textTransform: "uppercase", paddingTop: 8 }}>Concerns</div>
+                    {compareList.map(c => (
+                      <div key={c.id} style={{ background: "#13151f", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e2235" }}>
+                        {c.concerns?.length ? c.concerns.map((s, i) => <div key={i} style={{ fontSize: 11, color: "#9ca3af", marginBottom: 4 }}>⚠ {s}</div>) : <div style={{ fontSize: 11, color: "#3d4460" }}>None</div>}
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Recommendation */}
+                  <div style={{ display: "grid", gridTemplateColumns: `120px repeat(${compareList.length},1fr)`, gap: 10 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#4f8ef7", textTransform: "uppercase", paddingTop: 8 }}>AI Verdict</div>
+                    {compareList.map(c => (
+                      <div key={c.id} style={{ background: "#13151f", borderRadius: 8, padding: "10px 12px", border: "1px solid #1e2235", fontSize: 11, color: "#9ca3af", lineHeight: 1.5 }}>
+                        {c.recommendation}
+                        <div style={{ marginTop: 10, display: "flex", gap: 6 }}>
+                          <button onClick={() => setModal({ type: "interview", data: { candidate: c, role: activeRole } })}
+                            style={{ flex: 1, background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 6, padding: "6px 0", fontSize: 10, color: "#9ca3af", cursor: "pointer", fontWeight: 600 }}>🎯 Interview Qs</button>
+                          <button onClick={() => setModal({ type: "email", data: { candidate: c, role: activeRole } })}
+                            style={{ flex: 1, background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 6, padding: "6px 0", fontSize: 10, color: "#9ca3af", cursor: "pointer", fontWeight: 600 }}>📧 Email</button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── ANALYTICS VIEW ── */}
+          {view === "analytics" && (
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 700, marginBottom: 18 }}>Hiring Analytics — {activeRole?.title}</div>
+
+              {/* KPI row */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5,1fr)", gap: 10, marginBottom: 20 }}>
+                {[
+                  { v: analytics.total, l: "Total Candidates", c: "#4f8ef7", icon: "👥" },
+                  { v: analytics.screened, l: "Screened", c: "#7c5cbf", icon: "🔍" },
+                  { v: analytics.shortlisted, l: "Shortlisted", c: "#00c896", icon: "✓" },
+                  { v: analytics.avgScore || "—", l: "Avg Fit Score", c: "#f5a623", icon: "📊" },
+                  { v: `${analytics.screened ? Math.round((analytics.shortlisted / analytics.screened) * 100) : 0}%`, l: "Shortlist Rate", c: "#e05c5c", icon: "📈" },
+                ].map(s => (
+                  <div key={s.l} style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: "14px 14px" }}>
+                    <div style={{ fontSize: 20, marginBottom: 6 }}>{s.icon}</div>
+                    <div style={{ fontSize: 26, fontWeight: 800, color: s.c }}>{s.v}</div>
+                    <div style={{ fontSize: 10, color: "#6b7280", marginTop: 2 }}>{s.l}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+                {/* Verdict breakdown */}
+                <div style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 14 }}>Fit Score Distribution</div>
+                  {analytics.byVerdict.map(v => (
+                    <div key={v.label} style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: v.color, fontWeight: 600 }}>{v.label}</span>
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>{v.count}</span>
+                      </div>
+                      <div style={{ background: "#0b0d14", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                        <div style={{ width: `${analytics.screened ? (v.count / analytics.screened) * 100 : 0}%`, height: "100%", background: v.color, borderRadius: 4, transition: "width 0.5s ease" }} />
+                      </div>
+                    </div>
+                  ))}
+                  {analytics.screened === 0 && <div style={{ fontSize: 11, color: "#3d4460", textAlign: "center", marginTop: 20 }}>Screen candidates to see distribution</div>}
+                </div>
+
+                {/* Source breakdown */}
+                <div style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 14 }}>Candidates by Source</div>
+                  {analytics.bySource.map(s => (
+                    <div key={s.label} style={{ marginBottom: 10 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                        <span style={{ fontSize: 11, color: s.color, fontWeight: 600 }}>{s.label}</span>
+                        <span style={{ fontSize: 11, color: "#6b7280" }}>{s.count}</span>
+                      </div>
+                      <div style={{ background: "#0b0d14", borderRadius: 4, height: 6, overflow: "hidden" }}>
+                        <div style={{ width: `${(s.count / analytics.total) * 100}%`, height: "100%", background: s.color, borderRadius: 4 }} />
+                      </div>
+                    </div>
+                  ))}
+                  {analytics.total === 0 && <div style={{ fontSize: 11, color: "#3d4460", textAlign: "center", marginTop: 20 }}>Import candidates to see sources</div>}
+                </div>
+              </div>
+
+              {/* Pipeline funnel */}
+              <div style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: 16 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 14 }}>Pipeline Funnel</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(6,1fr)", gap: 8 }}>
+                  {analytics.byStage.map((s, i) => (
+                    <div key={s.label} style={{ textAlign: "center" }}>
+                      <div style={{ background: "#0b0d14", borderRadius: 8, padding: "12px 8px", marginBottom: 6, position: "relative" }}>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: i === 0 ? "#4f8ef7" : i === analytics.byStage.length - 1 ? "#e05c5c" : "#9ca3af" }}>{s.count}</div>
+                        {i < analytics.byStage.length - 1 && <div style={{ position: "absolute", right: -5, top: "50%", transform: "translateY(-50%)", color: "#3d4460", fontSize: 14 }}>›</div>}
+                      </div>
+                      <div style={{ fontSize: 9, color: "#6b7280", fontWeight: 600 }}>{s.label}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Top candidates table */}
+              {roleResults.length > 0 && (
+                <div style={{ background: "#13151f", border: "1px solid #1e2235", borderRadius: 11, padding: 16, marginTop: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 12 }}>Top Candidates Leaderboard</div>
+                  {roleResults.sort((a, b) => b.score - a.score).slice(0, 5).map((c, i) => (
+                    <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: i < 4 ? "1px solid #1e2235" : "none" }}>
+                      <div style={{ width: 22, height: 22, borderRadius: "50%", background: i === 0 ? "#f5a623" : "#1e2235", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: i === 0 ? "#000" : "#6b7280", flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
+                        <div style={{ fontSize: 10, color: "#6b7280" }}>{c.title} · {c.source}</div>
+                      </div>
+                      <div style={{ textAlign: "right" }}>
+                        <div style={{ fontSize: 20, fontWeight: 800, color: scoreColor(c.score) }}>{c.score}</div>
+                        <div style={{ fontSize: 9, color: verdictColor(c.verdict), fontWeight: 700 }}>{c.verdict}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
+      </div>
+
+      {/* ── MODALS ── */}
+      {modal && (
+        <div style={{ position: "fixed", inset: 0, background: "#000a", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+          onClick={e => e.target === e.currentTarget && setModal(null)}>
+          <div style={{ background: "#13151f", borderRadius: 16, padding: 24, width: "100%", maxWidth: 580, maxHeight: "85vh", overflowY: "auto", border: "1px solid #1e2235" }}>
+
+            {/* Interview Questions Modal */}
+            {modal.type === "interview" && (
+              <InterviewModal candidate={modal.data.candidate} role={modal.data.role} onClose={() => setModal(null)} />
+            )}
+
+            {/* Email Modal */}
+            {modal.type === "email" && (
+              <EmailModal candidate={modal.data.candidate} role={modal.data.role} onClose={() => setModal(null)} />
+            )}
+          </div>
+        </div>
+      )}
+
+      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}} ::-webkit-scrollbar{width:4px;height:4px} ::-webkit-scrollbar-track{background:#0b0d14} ::-webkit-scrollbar-thumb{background:#1e2235;border-radius:4px}`}</style>
+    </div>
+  );
+}
+
+// ─── Interview Questions Modal ────────────────────────────────────────────────
+function InterviewModal({ candidate, role, onClose }) {
+  const [questions, setQuestions] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  async function generate() {
+    setLoading(true);
+    try {
+      const q = await generateInterviewQuestions(candidate, role);
+      setQuestions(q);
+    } catch { alert("Generation failed. Try again."); }
+    setLoading(false);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Interview Questions</div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{candidate.name} · {candidate.title}</div>
+        </div>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 20, cursor: "pointer" }}>✕</button>
+      </div>
+      {!questions ? (
+        <div style={{ textAlign: "center", padding: "30px 0" }}>
+          <div style={{ fontSize: 32, marginBottom: 12 }}>🎯</div>
+          <div style={{ fontSize: 13, color: "#9ca3af", marginBottom: 18 }}>Generate tailored questions based on {candidate.name}'s profile and the {role.title} role requirements.</div>
+          <button onClick={generate} disabled={loading}
+            style={{ background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 9, padding: "11px 24px", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+            {loading ? "⏳ Generating..." : "✨ Generate Questions"}
+          </button>
+        </div>
+      ) : (
+        <div>
+          {[
+            { key: "technical", label: "Technical Questions", color: "#4f8ef7" },
+            { key: "behavioral", label: "Behavioral Questions", color: "#00c896" },
+            { key: "roleSpecific", label: "Role-Specific Questions", color: "#7c5cbf" },
+            { key: "redFlags", label: "🚩 Areas to Probe", color: "#f5a623" },
+          ].map(section => (
+            <div key={section.key} style={{ marginBottom: 18 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: section.color, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10 }}>{section.label}</div>
+              {questions[section.key]?.map((q, i) => (
+                <div key={i} style={{ background: "#0b0d14", borderRadius: 8, padding: "10px 14px", marginBottom: 7, fontSize: 13, color: "#e8eaf0", lineHeight: 1.6, borderLeft: `3px solid ${section.color}44` }}>
+                  {i + 1}. {q}
+                </div>
+              ))}
+            </div>
+          ))}
+          <button onClick={() => setQuestions(null)} style={{ background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 8, padding: "8px 16px", color: "#6b7280", fontSize: 12, cursor: "pointer" }}>↩ Regenerate</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Email Modal ──────────────────────────────────────────────────────────────
+function EmailModal({ candidate, role, onClose }) {
+  const [emailType, setEmailType] = useState("invite");
+  const [email, setEmail] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  async function generate() {
+    setLoading(true); setEmail(null);
+    try {
+      const e = await generateEmail(candidate, role, emailType);
+      setEmail(e);
+    } catch { alert("Generation failed."); }
+    setLoading(false);
+  }
+
+  function copy() {
+    navigator.clipboard.writeText(`Subject: ${email.subject}\n\n${email.body}`);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Draft Email</div>
+          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{candidate.name} · {candidate.title}</div>
+        </div>
+        <button onClick={onClose} style={{ background: "none", border: "none", color: "#6b7280", fontSize: 20, cursor: "pointer" }}>✕</button>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 7, marginBottom: 16 }}>
+        {[
+          { id: "invite", label: "📅 Interview Invite", color: "#4f8ef7" },
+          { id: "assessment", label: "🧪 Send Assessment", color: "#7c5cbf" },
+          { id: "offer", label: "🎉 Job Offer", color: "#00c896" },
+          { id: "reject", label: "❌ Rejection", color: "#e05c5c" },
+        ].map(t => (
+          <button key={t.id} onClick={() => { setEmailType(t.id); setEmail(null); }}
+            style={{ padding: "9px 12px", borderRadius: 9, border: `1px solid ${emailType === t.id ? t.color : "#1e2235"}`, cursor: "pointer", background: emailType === t.id ? t.color + "22" : "#0b0d14", color: emailType === t.id ? t.color : "#6b7280", fontSize: 12, fontWeight: emailType === t.id ? 700 : 400, textAlign: "left" }}>
+            {t.label}
+          </button>
+        ))}
+      </div>
+      {!email ? (
+        <button onClick={generate} disabled={loading}
+          style={{ width: "100%", background: "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: "none", borderRadius: 9, padding: "12px 0", color: "#fff", fontWeight: 700, fontSize: 14, cursor: "pointer" }}>
+          {loading ? "⏳ Drafting..." : "✨ Generate Email"}
+        </button>
+      ) : (
+        <div>
+          <div style={{ background: "#0b0d14", borderRadius: 9, padding: "10px 14px", marginBottom: 10, border: "1px solid #1e2235" }}>
+            <div style={{ fontSize: 10, color: "#6b7280", textTransform: "uppercase", marginBottom: 4 }}>Subject</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#e8eaf0" }}>{email.subject}</div>
+          </div>
+          <div style={{ background: "#0b0d14", borderRadius: 9, padding: "12px 14px", border: "1px solid #1e2235", fontSize: 13, color: "#b0b7c9", lineHeight: 1.7, whiteSpace: "pre-wrap", maxHeight: 260, overflowY: "auto" }}>
+            {email.body}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={copy} style={{ flex: 1, background: copied ? "#00c89622" : "linear-gradient(135deg,#4f8ef7,#7c5cbf)", border: copied ? "1px solid #00c896" : "none", borderRadius: 8, padding: "10px 0", color: copied ? "#00c896" : "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              {copied ? "✓ Copied!" : "📋 Copy Email"}
+            </button>
+            <button onClick={() => setEmail(null)} style={{ background: "#0b0d14", border: "1px solid #1e2235", borderRadius: 8, padding: "10px 14px", color: "#6b7280", fontSize: 13, cursor: "pointer" }}>↩ Redo</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+async function generateInterviewQuestions(candidate, role) {
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content: `Generate tailored interview questions.\nROLE: ${role.title} | SKILLS: ${role.skills || ""}\nCANDIDATE: ${candidate.name}, ${candidate.title}, ${candidate.experience}\nPROFILE: ${candidate.resume}\nReturn ONLY valid JSON:\n{"technical":["q1","q2","q3","q4"],"behavioral":["q1","q2","q3"],"roleSpecific":["q1","q2","q3"],"redFlags":["probe1","probe2"]}` }] })
+  });
+  const data = await res.json();
+  return JSON.parse(data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim());
+}
+
+async function generateEmail(candidate, role, emailType) {
+  const prompts = {
+    invite: `Write a professional interview invite email for ${candidate.name} (${candidate.title}) for the ${role.title} role at ${role.company || "our company"}.`,
+    reject: `Write a respectful rejection email for ${candidate.name} who applied for ${role.title} at ${role.company || "our company"}. Kind, brief, leaves door open.`,
+    offer: `Write an exciting job offer email for ${candidate.name} for ${role.title} at ${role.company || "our company"}.`,
+    assessment: `Write an email to ${candidate.name} asking them to complete a technical assessment for ${role.title} at ${role.company || "our company"}.`,
+  };
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 800, messages: [{ role: "user", content: `${prompts[emailType]}\nReturn ONLY valid JSON: {"subject":"email subject","body":"full email body"}` }] })
+  });
+  const data = await res.json();
+  return JSON.parse(data.content.map(i => i.text || "").join("").replace(/```json|```/g, "").trim());
+}
