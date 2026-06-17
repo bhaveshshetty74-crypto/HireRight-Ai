@@ -1,4 +1,4 @@
-import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarProvider } from "@/components/ui/sidebar";
+import { Sidebar, SidebarContent, SidebarHeader, SidebarMenu, SidebarMenuItem, SidebarMenuButton, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { Link, useLocation } from "wouter";
 import { LayoutDashboard, Briefcase, Users, FileCheck, BarChart } from "lucide-react";
 import { ReactNode } from "react";
@@ -58,11 +58,16 @@ export function Layout({ children }: { children: ReactNode }) {
             </SidebarMenu>
           </SidebarContent>
         </Sidebar>
-        <main className="flex-1 overflow-y-auto bg-muted/20">
-          <div className="mx-auto max-w-6xl p-8">
-            {children}
-          </div>
-        </main>
+        <div className="flex flex-col flex-1 overflow-hidden">
+          <header className="flex items-center h-12 px-4 border-b border-border bg-background shrink-0">
+            <SidebarTrigger data-testid="sidebar-trigger" />
+          </header>
+          <main className="flex-1 overflow-y-auto bg-muted/20">
+            <div className="mx-auto max-w-6xl p-8">
+              {children}
+            </div>
+          </main>
+        </div>
       </div>
     </SidebarProvider>
   );
