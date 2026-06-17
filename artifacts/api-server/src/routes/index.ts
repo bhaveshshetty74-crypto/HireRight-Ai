@@ -5,6 +5,7 @@ import candidatesRouter from "./candidates";
 import screeningsRouter from "./screenings";
 import aiRouter from "./ai";
 import analyticsRouter from "./analytics";
+import stripeRouter from "./stripe";
 
 const router: IRouter = Router();
 
@@ -14,5 +15,6 @@ router.use(candidatesRouter);
 router.use(screeningsRouter);
 router.use(aiRouter);
 router.use(analyticsRouter);
+router.use(stripeRouter);
 
 export default router;

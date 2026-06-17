@@ -11,6 +11,7 @@ import CandidateDetail from "@/pages/candidates/[id]";
 import Screenings from "@/pages/screenings";
 import Analytics from "@/pages/analytics";
 import Help from "@/pages/help";
+import Pricing from "@/pages/pricing";
 import NotFound from "@/pages/not-found";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ function Router() {
         <Route path="/screenings" component={Screenings} />
         <Route path="/analytics" component={Analytics} />
         <Route path="/help" component={Help} />
+        <Route path="/pricing" component={Pricing} />
         <Route component={NotFound} />
       </Switch>
     </Layout>
